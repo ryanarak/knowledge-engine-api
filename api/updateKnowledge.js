@@ -8,7 +8,6 @@ export default async function handler(req, res) {
   const { filename, content } = req.body;
 
   try {
-    // Load credentials and token from environment variables
     if (!process.env.GOOGLE_CREDENTIALS) {
       throw new Error('Missing GOOGLE_CREDENTIALS env variable');
     }
@@ -25,17 +24,12 @@ export default async function handler(req, res) {
 
     const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 
-    // Use known folder ID directly (Knowledge Engine)
+    // ✅ Use the exact folder ID instead of searching by name
     const folderId = '10jDyDi9RO-QHabrHHURXp9laVmhulIRH';
 
     // Check if file exists in that folder
     const fileQuery = `name='${filename}' and '${folderId}' in parents and trashed=false`;
-    const fileRes = await drive.files.list({
-      q: fileQuery,
-      fields: 'files(id,name)',
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true
-    });
+    const fileRes = await drive.files.list({ q: fileQuery, fields: 'files(id,name)' });
 
     if (fileRes.data.files && fileRes.data.files.length > 0) {
       // Update file
@@ -43,18 +37,16 @@ export default async function handler(req, res) {
       await drive.files.update({
         fileId,
         media: { mimeType: 'text/plain', body: content },
-        supportsAllDrives: true
       });
     } else {
-      // Create new file
+      // Create file
       await drive.files.create({
         requestBody: {
           name: filename,
           parents: [folderId],
-          mimeType: 'text/plain'
+          mimeType: 'text/plain',
         },
         media: { mimeType: 'text/plain', body: content },
-        supportsAllDrives: true
       });
     }
 
@@ -64,7 +56,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Failed to update Knowledge Engine', details: err.message });
   }
 }
-
-
-
 
