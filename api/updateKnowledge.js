@@ -25,17 +25,17 @@ export default async function handler(req, res) {
 
     const drive = google.drive({ version: 'v3', auth: oAuth2Client });
 
-    // Find "Knowledge Engine" folder
-    const folderQuery = "name='Knowledge Engine' and mimeType='application/vnd.google-apps.folder' and trashed=false";
-    const folderRes = await drive.files.list({ q: folderQuery, fields: 'files(id,name)' });
-    if (!folderRes.data.files || folderRes.data.files.length === 0) {
-      throw new Error('Knowledge Engine folder not found');
-    }
-    const folderId = folderRes.data.files[0].id;
+    // Use known folder ID directly (Knowledge Engine)
+    const folderId = '10jDyDi9RO-QHabrHHURXp9laVmhulIRH';
 
-    // Check if file exists
+    // Check if file exists in that folder
     const fileQuery = `name='${filename}' and '${folderId}' in parents and trashed=false`;
-    const fileRes = await drive.files.list({ q: fileQuery, fields: 'files(id,name)' });
+    const fileRes = await drive.files.list({
+      q: fileQuery,
+      fields: 'files(id,name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
 
     if (fileRes.data.files && fileRes.data.files.length > 0) {
       // Update file
@@ -43,16 +43,18 @@ export default async function handler(req, res) {
       await drive.files.update({
         fileId,
         media: { mimeType: 'text/plain', body: content },
+        supportsAllDrives: true
       });
     } else {
-      // Create file
+      // Create new file
       await drive.files.create({
         requestBody: {
           name: filename,
           parents: [folderId],
-          mimeType: 'text/plain',
+          mimeType: 'text/plain'
         },
         media: { mimeType: 'text/plain', body: content },
+        supportsAllDrives: true
       });
     }
 
@@ -62,6 +64,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Failed to update Knowledge Engine', details: err.message });
   }
 }
+
 
 
 
