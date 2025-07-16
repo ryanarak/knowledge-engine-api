@@ -8,5 +8,16 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": ""
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ryanarak/knowledge-engine-api.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ryanarak/knowledge-engine-api/issues"
+  },
+  "homepage": "https://github.com/ryanarak/knowledge-engine-api#readme",
+  "description": "",
+  "dependencies": {
+    "googleapis": "^153.0.0"
+  }
 }
