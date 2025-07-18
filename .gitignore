@@ -1,3 +1,4 @@
 # Ignore service account keys
 *.json
 !package.json
+.vercel
