@@ -1,58 +1,206 @@
+// api/updateKnowledge.js
 import { google } from 'googleapis';
+import fetch from 'node-fetch';
+
+// 📂 Default Knowledge Engine Shared Drive folder ID
+const DEFAULT_FOLDER_ID = '1W25IaUwycLXvldVmXuqsKkR9QFuWyO6_';
+
+// 🧩 Helper: infer MIME type based on extension
+function getMimeType(filename) {
+  if (filename.endsWith('.json')) return 'application/json';
+  if (filename.endsWith('.md')) return 'text/markdown';
+  if (filename.endsWith('.csv')) return 'text/csv';
+  if (filename.endsWith('.html')) return 'text/html';
+  return 'text/plain';
+}
+
+// 🪵 Helper: update the ledger with a new entry
+async function updateLedger(drive, context, summary, logPath) {
+  const ledgerFolderId = '1dCwS0nBKQjum7j6aN0ZMEUawI5fH-meS'; // Documentation - Archives
+  const ledgerFileName = 'Randall_Memory_Ledger.json';
+
+  try {
+    const ledgerQuery = await drive.files.list({
+      q: `'${ledgerFolderId}' in parents and name='${ledgerFileName}' and trashed=false`,
+      fields: 'files(id,name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
+
+    let ledgerFileId;
+    let ledgerContent = [];
+
+    if (ledgerQuery.data.files.length > 0) {
+      ledgerFileId = ledgerQuery.data.files[0].id;
+      const contentRes = await drive.files.get(
+        { fileId: ledgerFileId, alt: 'media' },
+        { responseType: 'text' }
+      );
+      try {
+        ledgerContent = JSON.parse(contentRes.data || '[]');
+      } catch {
+        ledgerContent = [];
+      }
+    } else {
+      const createRes = await drive.files.create({
+        requestBody: {
+          name: ledgerFileName,
+          parents: [ledgerFolderId],
+          mimeType: 'application/json'
+        },
+        media: {
+          mimeType: 'application/json',
+          body: JSON.stringify([], null, 2)
+        },
+        fields: 'id',
+        supportsAllDrives: true
+      });
+      ledgerFileId = createRes.data.id;
+    }
+
+    ledgerContent.push({
+      timestamp: new Date().toISOString(),
+      context,
+      summary,
+      logPath
+    });
+
+    await drive.files.update({
+      fileId: ledgerFileId,
+      media: {
+        mimeType: 'application/json',
+        body: JSON.stringify(ledgerContent, null, 2)
+      },
+      supportsAllDrives: true
+    });
+
+    console.log('🪵 Ledger updated successfully.');
+  } catch (err) {
+    console.error('⚠️ Ledger update failed:', err.message);
+  }
+}
+
+// 🚀 Helper: trigger additional workflows (e.g., Slack)
+async function triggerWorkflow(name, payload) {
+  try {
+    if (name === 'send_slack_message' && process.env.SLACK_TOKEN) {
+      await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.SLACK_TOKEN}`
+        },
+        body: JSON.stringify({
+          channel: '#general',
+          text: payload?.text || 'No text provided'
+        })
+      });
+      console.log('✅ Slack workflow triggered.');
+    }
+    // 🛠️ Add more workflow integrations here if needed
+  } catch (err) {
+    console.error('⚠️ Workflow trigger failed:', err.message);
+  }
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { filename, content } = req.body;
+  const { filename, content, folderId = DEFAULT_FOLDER_ID, context = 'General', trigger = false } = req.body;
+
+  if (!filename || typeof filename !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid filename' });
+  }
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: 'Missing or invalid content' });
+  }
 
   try {
     if (!process.env.GOOGLE_CREDENTIALS) {
       throw new Error('Missing GOOGLE_CREDENTIALS env variable');
     }
-    if (!process.env.GOOGLE_TOKEN) {
-      throw new Error('Missing GOOGLE_TOKEN env variable');
-    }
 
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-    const token = JSON.parse(process.env.GOOGLE_TOKEN);
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/drive']
+    });
+    const drive = google.drive({ version: 'v3', auth });
 
-    const { client_secret, client_id, redirect_uris } = credentials.installed || credentials.web;
-    const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-    oAuth2Client.setCredentials(token);
+    const mimeType = getMimeType(filename);
+    console.log(`📄 Processing file: ${filename} (${mimeType}) in folder: ${folderId}`);
 
-    const drive = google.drive({ version: 'v3', auth: oAuth2Client });
+    // 🔎 Check if file exists in folder
+    const query = `name='${filename}' and '${folderId}' in parents and trashed=false`;
+    const listRes = await drive.files.list({
+      q: query,
+      fields: 'files(id,name,webViewLink)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
+    });
 
-    // ✅ Use the exact folder ID instead of searching by name
-    const folderId = '10jDyDi9RO-QHabrHHURXp9laVmhulIRH';
+    let action;
+    let fileId;
+    let webViewLink;
 
-    // Check if file exists in that folder
-    const fileQuery = `name='${filename}' and '${folderId}' in parents and trashed=false`;
-    const fileRes = await drive.files.list({ q: fileQuery, fields: 'files(id,name)' });
-
-    if (fileRes.data.files && fileRes.data.files.length > 0) {
-      // Update file
-      const fileId = fileRes.data.files[0].id;
+    if (listRes.data.files.length > 0) {
+      // Update existing file
+      fileId = listRes.data.files[0].id;
       await drive.files.update({
         fileId,
-        media: { mimeType: 'text/plain', body: content },
+        media: { mimeType, body: content },
+        supportsAllDrives: true
       });
+      action = 'updated';
+      const fileInfo = await drive.files.get({
+        fileId,
+        fields: 'webViewLink',
+        supportsAllDrives: true
+      });
+      webViewLink = fileInfo.data.webViewLink;
+      console.log(`✅ Updated file: ${filename}`);
     } else {
-      // Create file
-      await drive.files.create({
+      // Create new file
+      const createRes = await drive.files.create({
         requestBody: {
           name: filename,
           parents: [folderId],
-          mimeType: 'text/plain',
+          mimeType
         },
-        media: { mimeType: 'text/plain', body: content },
+        media: { mimeType, body: content },
+        fields: 'id,webViewLink',
+        supportsAllDrives: true
       });
+      fileId = createRes.data.id;
+      webViewLink = createRes.data.webViewLink;
+      action = 'created';
+      console.log(`✅ Created file: ${filename}`);
     }
 
-    return res.status(200).json({ status: 'success', message: `Updated ${filename}` });
+    // 🪵 Log to ledger
+    const logPath = `https://drive.google.com/file/d/${fileId}/view`;
+    const summary = `${action.toUpperCase()} file: ${filename}`;
+    await updateLedger(drive, context, summary, logPath);
+
+    // 🚀 Trigger optional workflow
+    if (trigger) {
+      await triggerWorkflow('send_slack_message', { text: `${summary}\n${logPath}` });
+    }
+
+    return res.status(200).json({
+      status: 'success',
+      action,
+      filename,
+      fileId,
+      webViewLink,
+      logPath,
+      ledger: 'updated',
+      workflowTriggered: !!trigger
+    });
   } catch (err) {
-    console.error('Error updating Knowledge Engine:', err);
+    console.error('❌ Error in updateKnowledge:', err);
     return res.status(500).json({ error: 'Failed to update Knowledge Engine', details: err.message });
   }
 }

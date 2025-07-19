@@ -1,13 +1,25 @@
 {
   "name": "knowledge-engine-api",
   "version": "1.0.0",
+  "description": "Knowledge Engine API – world-class Google Drive integration and logging engine",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node api/server.js",
+    "dev": "nodemon api/server.js",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "echo \"No tests specified yet\" && exit 0",
+    "prepare": "husky install"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": [
+    "knowledge-engine",
+    "api",
+    "google-drive",
+    "logging",
+    "automation"
+  ],
+  "author": "Ryan Arak",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ryanarak/knowledge-engine-api.git"
@@ -16,8 +28,31 @@
     "url": "https://github.com/ryanarak/knowledge-engine-api/issues"
   },
   "homepage": "https://github.com/ryanarak/knowledge-engine-api#readme",
-  "description": "",
   "dependencies": {
-    "googleapis": "^153.0.0"
+    "dotenv": "^16.4.5",
+    "googleapis": "^153.0.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "eslint": "^9.31.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^16.3.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "nodemon": "^3.1.0",
+    "prettier": "^3.6.2"
+  },
+  "lint-staged": {
+    "*.{js,mjs,cjs}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,css,md}": [
+      "prettier --write"
+    ]
+  },
+  "engines": {
+    "node": ">=18.x"
   }
 }

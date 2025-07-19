@@ -1,6 +1,7 @@
+// api/logs-template.js
 import { google } from 'googleapis';
 
-// 🔥 Direct mapping from folder names to their exact NEW Shared Drive folder IDs
+// ✅ Centralized folder map for direct lookups (updated with new Shared Drive IDs)
 const folderMap = {
   "Compliance": "1VweenVvzp7019ILgZYVINiUQF-wxLuEQ",
   "Accounting": "19DJwCmOBInXTHD_p-Yw7v6Ou8_Sk0CVj",
@@ -79,79 +80,49 @@ const folderMap = {
 };
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
+  if (req.method !== 'GET') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { folderName, fileType, action, content } = req.body;
-  if (!folderName || !fileType || !action) {
-    return res.status(400).json({ error: 'Missing parameters' });
+  const { context } = req.query;
+  if (!context) {
+    return res.status(400).json({ error: 'Missing context' });
   }
 
-  const targetFolderId = folderMap[folderName];
-  if (!targetFolderId) {
-    return res.status(404).json({ error: `Folder ${folderName} not mapped` });
+  const folderId = folderMap[context];
+  if (!folderId) {
+    return res.status(404).json({ error: `Context folder '${context}' not found in mapping.` });
   }
 
   try {
+    // 🔑 Authenticate with service account
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-
     const auth = new google.auth.GoogleAuth({
-      credentials: credentials,
+      credentials,
       scopes: ['https://www.googleapis.com/auth/drive']
     });
-
     const drive = google.drive({ version: 'v3', auth });
 
-    const targetFileName = `${folderName}_${fileType}.txt`;
-
-    const fileList = await drive.files.list({
-      q: `'${targetFolderId}' in parents and name='${targetFileName}' and trashed=false`,
+    // 📄 Look for template file
+    const fileName = `${context}_Template.txt`;
+    const fileRes = await drive.files.list({
+      q: `'${folderId}' in parents and name='${fileName}' and trashed=false`,
       fields: 'files(id, name)'
     });
 
-    const targetFile = fileList.data.files[0];
-
-    if (action === 'read') {
-      if (!targetFile) {
-        return res.status(404).json({ error: `File ${targetFileName} not found` });
-      }
-      const fileContent = await drive.files.get(
-        { fileId: targetFile.id, alt: 'media' },
-        { responseType: 'text' }
-      );
-      return res.status(200).json({ content: fileContent.data });
-
-    } else if (action === 'write') {
-      if (!targetFile) {
-        const created = await drive.files.create({
-          requestBody: {
-            name: targetFileName,
-            parents: [targetFolderId],
-            mimeType: 'text/plain'
-          },
-          media: {
-            mimeType: 'text/plain',
-            body: content
-          }
-        });
-        return res.status(200).json({ message: 'File created', id: created.data.id });
-      } else {
-        await drive.files.update({
-          fileId: targetFile.id,
-          media: {
-            mimeType: 'text/plain',
-            body: content
-          }
-        });
-        return res.status(200).json({ message: 'File updated', id: targetFile.id });
-      }
-    } else {
-      return res.status(400).json({ error: 'Invalid action' });
+    if (fileRes.data.files.length === 0) {
+      return res.status(404).json({ error: `Template file '${fileName}' not found in '${context}'.` });
     }
 
+    const fileId = fileRes.data.files[0].id;
+    const contentRes = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'text' }
+    );
+
+    return res.status(200).json({ template: contentRes.data });
   } catch (err) {
-    console.error('Error in dynamic-file handler:', err);
+    console.error('Error fetching template:', err);
     return res.status(500).json({ error: err.message });
   }
 }

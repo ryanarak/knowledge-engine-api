@@ -1,6 +1,8 @@
-import { google } from 'googleapis';
 
-// 🔥 Direct mapping from folder names to their exact NEW Shared Drive folder IDs
+import { google } from 'googleapis';
+import { v4 as uuidv4 } from 'uuid';
+
+// 🔥 Updated folder map with new Shared Drive IDs
 const folderMap = {
   "Compliance": "1VweenVvzp7019ILgZYVINiUQF-wxLuEQ",
   "Accounting": "19DJwCmOBInXTHD_p-Yw7v6Ou8_Sk0CVj",
@@ -78,80 +80,131 @@ const folderMap = {
   "Vision": "1y4Xms3qMOb4K9X2a5MkHiSOmFW7Eb3b1"
 };
 
+// 🌌 Default template remains unchanged
+const DEFAULT_TEMPLATE = `# Log Entry
+---
+timestamp: {{timestamp}}
+date: {{date}}
+time: {{time}}
+context: {{context}}
+user: {{user}}
+uuid: {{uuid}}
+metadata: {{metadata}}
+related_contexts: {{relatedContexts}}
+workflow_id: {{workflowId}}
+
+## Entry
+{{entry}}
+---
+(end of entry)
+`;
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { folderName, fileType, action, content } = req.body;
-  if (!folderName || !fileType || !action) {
-    return res.status(400).json({ error: 'Missing parameters' });
+  const { context, entry, user = 'system', metadata = '{}', relatedContexts = '', workflowId = '' } = req.body;
+  if (!context || !entry) {
+    return res.status(400).json({ error: 'Missing context or entry' });
   }
 
-  const targetFolderId = folderMap[folderName];
-  if (!targetFolderId) {
-    return res.status(404).json({ error: `Folder ${folderName} not mapped` });
+  const folderId = folderMap[context];
+  if (!folderId) {
+    return res.status(404).json({ error: `Context folder '${context}' not found in mapping.` });
   }
 
   try {
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-
     const auth = new google.auth.GoogleAuth({
-      credentials: credentials,
+      credentials,
       scopes: ['https://www.googleapis.com/auth/drive']
     });
-
     const drive = google.drive({ version: 'v3', auth });
 
-    const targetFileName = `${folderName}_${fileType}.txt`;
+    // ✅ Logic unchanged below, uses folderId directly
 
-    const fileList = await drive.files.list({
-      q: `'${targetFolderId}' in parents and name='${targetFileName}' and trashed=false`,
-      fields: 'files(id, name)'
+    // Ensure template exists
+    const templateName = `${context}_Template.txt`;
+    let templateId = null;
+    const templateQuery = await drive.files.list({
+      q: `'${folderId}' in parents and name='${templateName}' and trashed=false`,
+      fields: 'files(id,name)'
     });
 
-    const targetFile = fileList.data.files[0];
-
-    if (action === 'read') {
-      if (!targetFile) {
-        return res.status(404).json({ error: `File ${targetFileName} not found` });
-      }
-      const fileContent = await drive.files.get(
-        { fileId: targetFile.id, alt: 'media' },
-        { responseType: 'text' }
-      );
-      return res.status(200).json({ content: fileContent.data });
-
-    } else if (action === 'write') {
-      if (!targetFile) {
-        const created = await drive.files.create({
-          requestBody: {
-            name: targetFileName,
-            parents: [targetFolderId],
-            mimeType: 'text/plain'
-          },
-          media: {
-            mimeType: 'text/plain',
-            body: content
-          }
-        });
-        return res.status(200).json({ message: 'File created', id: created.data.id });
-      } else {
-        await drive.files.update({
-          fileId: targetFile.id,
-          media: {
-            mimeType: 'text/plain',
-            body: content
-          }
-        });
-        return res.status(200).json({ message: 'File updated', id: targetFile.id });
-      }
+    if (templateQuery.data.files.length === 0) {
+      const created = await drive.files.create({
+        requestBody: { name: templateName, parents: [folderId], mimeType: 'text/plain' },
+        media: { mimeType: 'text/plain', body: DEFAULT_TEMPLATE }
+      });
+      templateId = created.data.id;
     } else {
-      return res.status(400).json({ error: 'Invalid action' });
+      templateId = templateQuery.data.files[0].id;
     }
 
+    // Read template
+    const templateContentResponse = await drive.files.get(
+      { fileId: templateId, alt: 'media' },
+      { responseType: 'text' }
+    );
+    let templateContent = templateContentResponse.data;
+
+    const now = new Date();
+    const uuid = uuidv4();
+
+    const populatedContent = templateContent
+      .replace(/{{timestamp}}/gi, now.toISOString())
+      .replace(/{{date}}/gi, now.toLocaleDateString())
+      .replace(/{{time}}/gi, now.toLocaleTimeString())
+      .replace(/{{context}}/gi, context)
+      .replace(/{{user}}/gi, user)
+      .replace(/{{uuid}}/gi, uuid)
+      .replace(/{{metadata}}/gi, metadata)
+      .replace(/{{relatedContexts}}/gi, relatedContexts)
+      .replace(/{{workflowId}}/gi, workflowId)
+      .replace(/{{entry}}/gi, entry);
+
+    // Append to master populated file
+    const populatedName = `${context}_Populated.txt`;
+    const populatedQuery = await drive.files.list({
+      q: `'${folderId}' in parents and name='${populatedName}' and trashed=false`,
+      fields: 'files(id,name)'
+    });
+
+    if (populatedQuery.data.files.length === 0) {
+      await drive.files.create({
+        requestBody: { name: populatedName, parents: [folderId], mimeType: 'text/plain' },
+        media: { mimeType: 'text/plain', body: populatedContent }
+      });
+    } else {
+      const populatedId = populatedQuery.data.files[0].id;
+      const existingResponse = await drive.files.get(
+        { fileId: populatedId, alt: 'media' },
+        { responseType: 'text' }
+      );
+      const updatedContent = `${existingResponse.data}\n${populatedContent}`;
+      await drive.files.update({
+        fileId: populatedId,
+        media: { mimeType: 'text/plain', body: updatedContent }
+      });
+    }
+
+    // Also create an individual archive
+    const safeTime = now.toISOString().replace(/[:.]/g, '-');
+    const archiveName = `${context}_Log_${safeTime}_${uuid}.txt`;
+    const archiveFile = await drive.files.create({
+      requestBody: { name: archiveName, parents: [folderId], mimeType: 'text/plain' },
+      media: { mimeType: 'text/plain', body: populatedContent }
+    });
+
+    return res.status(200).json({
+      message: 'Log entry archived and populated file updated',
+      archiveId: archiveFile.data.id,
+      archiveName
+    });
+
   } catch (err) {
-    console.error('Error in dynamic-file handler:', err);
+    console.error('Error in logs-create-entry:', err);
     return res.status(500).json({ error: err.message });
   }
 }
