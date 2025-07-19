@@ -94,55 +94,65 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: `Folder ${folderName} not mapped` });
   }
 
-  const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-  const token = JSON.parse(process.env.GOOGLE_TOKEN);
-  const { client_secret, client_id, redirect_uris } = credentials.installed;
-  const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
-  oAuth2Client.setCredentials(token);
-
-  const drive = google.drive({ version: 'v3', auth: oAuth2Client });
-
   try {
+    // Load service account credentials
+    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+
+    // Authenticate using service account
+    const auth = new google.auth.GoogleAuth({
+      credentials: credentials,
+      scopes: ['https://www.googleapis.com/auth/drive']
+    });
+
+    const drive = google.drive({ version: 'v3', auth });
+
     const targetFileName = `${folderName}_${fileType}.txt`;
 
+    // Check if file exists in target folder
     const fileList = await drive.files.list({
       q: `'${targetFolderId}' in parents and name='${targetFileName}' and trashed=false`,
-      fields: 'files(id, name)',
+      fields: 'files(id, name)'
     });
 
     let targetFile = fileList.data.files[0];
 
     if (action === 'read') {
-      if (!targetFile) return res.status(404).json({ error: `File ${targetFileName} not found` });
-      const fileContent = await drive.files.get(
-        { fileId: targetFile.id, alt: 'media' },
-        { responseType: 'text' }
-      );
+      if (!targetFile) {
+        return res.status(404).json({ error: `File ${targetFileName} not found` });
+      }
+      const fileContent = await drive.files.get({
+        fileId: targetFile.id,
+        alt: 'media'
+      }, { responseType: 'text' });
       return res.status(200).json({ content: fileContent.data });
+
     } else if (action === 'write') {
       if (!targetFile) {
+        // Create new file if not found
         const created = await drive.files.create({
           requestBody: {
             name: targetFileName,
             parents: [targetFolderId],
-            mimeType: 'text/plain',
+            mimeType: 'text/plain'
           },
           media: {
             mimeType: 'text/plain',
-            body: content,
-          },
+            body: content
+          }
         });
         return res.status(200).json({ message: `File created`, id: created.data.id });
       } else {
+        // Update existing file
         await drive.files.update({
           fileId: targetFile.id,
           media: {
             mimeType: 'text/plain',
-            body: content,
-          },
+            body: content
+          }
         });
         return res.status(200).json({ message: `File updated`, id: targetFile.id });
       }
+
     } else {
       return res.status(400).json({ error: 'Invalid action' });
     }
