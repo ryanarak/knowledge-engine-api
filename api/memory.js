@@ -102,7 +102,10 @@ export default async function handler(req, res) {
       return res.status(404).json({ error: `Folder key '${folderKey}' not found in folderMap.` });
     }
 
-    // Authenticate with Drive
+    // 🛠️ Authenticate with Drive using environment variable
+    if (!process.env.GOOGLE_CREDENTIALS) {
+      throw new Error('GOOGLE_CREDENTIALS not set in environment');
+    }
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -175,6 +178,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
-
- 
  
