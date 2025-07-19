@@ -89,16 +89,13 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
 
-  // Validate folder name in map
   const targetFolderId = folderMap[folderName];
   if (!targetFolderId) {
     return res.status(404).json({ error: `Folder ${folderName} not mapped` });
   }
 
-  // Load credentials
   const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
   const token = JSON.parse(process.env.GOOGLE_TOKEN);
-
   const { client_secret, client_id, redirect_uris } = credentials.installed;
   const oAuth2Client = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
   oAuth2Client.setCredentials(token);
@@ -108,7 +105,6 @@ export default async function handler(req, res) {
   try {
     const targetFileName = `${folderName}_${fileType}.txt`;
 
-    // Find if file exists in target folder
     const fileList = await drive.files.list({
       q: `'${targetFolderId}' in parents and name='${targetFileName}' and trashed=false`,
       fields: 'files(id, name)',
@@ -123,10 +119,8 @@ export default async function handler(req, res) {
         { responseType: 'text' }
       );
       return res.status(200).json({ content: fileContent.data });
-
     } else if (action === 'write') {
       if (!targetFile) {
-        // Create new file
         const created = await drive.files.create({
           requestBody: {
             name: targetFileName,
@@ -140,7 +134,6 @@ export default async function handler(req, res) {
         });
         return res.status(200).json({ message: `File created`, id: created.data.id });
       } else {
-        // Update existing file
         await drive.files.update({
           fileId: targetFile.id,
           media: {
@@ -150,14 +143,11 @@ export default async function handler(req, res) {
         });
         return res.status(200).json({ message: `File updated`, id: targetFile.id });
       }
-
     } else {
       return res.status(400).json({ error: 'Invalid action' });
     }
-
   } catch (err) {
     console.error('Error in dynamic-file handler:', err);
     return res.status(500).json({ error: err.message });
   }
 }
-
