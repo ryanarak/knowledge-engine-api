@@ -1,6 +1,6 @@
 import { google } from 'googleapis';
 
-// 🔥 Direct mapping from folder names to their exact NEW Shared Drive folder IDs
+// 🔥 Direct mapping from folder names to their exact Shared Drive folder IDs
 const folderMap = {
   "Compliance": "1VweenVvzp7019ILgZYVINiUQF-wxLuEQ",
   "Accounting": "19DJwCmOBInXTHD_p-Yw7v6Ou8_Sk0CVj",
@@ -85,7 +85,10 @@ export default async function handler(req, res) {
 
   const { folderName, fileType, action, content } = req.body;
   if (!folderName || !fileType || !action) {
-    return res.status(400).json({ error: 'Missing parameters' });
+    return res.status(400).json({ error: 'Missing parameters: folderName, fileType, or action' });
+  }
+  if (action === 'write' && (typeof content !== 'string' || !content.trim())) {
+    return res.status(400).json({ error: 'Missing or empty content for write action' });
   }
 
   const targetFolderId = folderMap[folderName];
@@ -93,21 +96,30 @@ export default async function handler(req, res) {
     return res.status(404).json({ error: `Folder ${folderName} not mapped` });
   }
 
+  const sharedDriveId = process.env.SHARED_DRIVE_ID;
+  if (!sharedDriveId) {
+    return res.status(500).json({ error: 'Missing SHARED_DRIVE_ID in environment' });
+  }
+  console.log('Using Shared Drive ID:', sharedDriveId);
+
   try {
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-
     const auth = new google.auth.GoogleAuth({
-      credentials: credentials,
+      credentials,
       scopes: ['https://www.googleapis.com/auth/drive']
     });
-
     const drive = google.drive({ version: 'v3', auth });
 
     const targetFileName = `${folderName}_${fileType}.txt`;
 
+    // Search specifically in the Shared Drive
     const fileList = await drive.files.list({
+      corpora: 'drive',
+      driveId: sharedDriveId,
       q: `'${targetFolderId}' in parents and name='${targetFileName}' and trashed=false`,
-      fields: 'files(id, name)'
+      fields: 'files(id,name)',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true
     });
 
     const targetFile = fileList.data.files[0];
@@ -117,7 +129,7 @@ export default async function handler(req, res) {
         return res.status(404).json({ error: `File ${targetFileName} not found` });
       }
       const fileContent = await drive.files.get(
-        { fileId: targetFile.id, alt: 'media' },
+        { fileId: targetFile.id, alt: 'media', supportsAllDrives: true },
         { responseType: 'text' }
       );
       return res.status(200).json({ content: fileContent.data });
@@ -130,28 +142,26 @@ export default async function handler(req, res) {
             parents: [targetFolderId],
             mimeType: 'text/plain'
           },
-          media: {
-            mimeType: 'text/plain',
-            body: content
-          }
+          media: { mimeType: 'text/plain', body: content },
+          supportsAllDrives: true,
+          fields: 'id,name'
         });
         return res.status(200).json({ message: 'File created', id: created.data.id });
       } else {
         await drive.files.update({
           fileId: targetFile.id,
-          media: {
-            mimeType: 'text/plain',
-            body: content
-          }
+          media: { mimeType: 'text/plain', body: content },
+          supportsAllDrives: true,
+          fields: 'id,name'
         });
         return res.status(200).json({ message: 'File updated', id: targetFile.id });
       }
     } else {
-      return res.status(400).json({ error: 'Invalid action' });
+      return res.status(400).json({ error: 'Invalid action. Use "read" or "write".' });
     }
-
   } catch (err) {
-    console.error('Error in dynamic-file handler:', err);
-    return res.status(500).json({ error: err.message });
+    console.error('❌ Error in dynamic-file handler:', err.response?.data || err.message, err.stack);
+    return res.status(500).json({ error: err.message, details: err.response?.data });
   }
 }
+

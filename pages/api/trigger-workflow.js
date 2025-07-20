@@ -1,4 +1,11 @@
 // api/trigger-workflow.js
+
+// ✅ Use dynamic import for fetch to avoid ESM/CJS conflicts
+async function safeFetch(...args) {
+  const { default: fetch } = await import('node-fetch');
+  return fetch(...args);
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -22,7 +29,7 @@ export default async function handler(req, res) {
         const channel = data.channel || '#general';
         const text = data.text || 'No text provided';
 
-        const resp = await fetch('https://slack.com/api/chat.postMessage', {
+        const resp = await safeFetch('https://slack.com/api/chat.postMessage', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -38,7 +45,6 @@ export default async function handler(req, res) {
       },
 
       async create_task(data) {
-        // 🛠️ Hook into your task system
         const { title, dueDate } = data;
         console.log(`📝 Creating task: ${title} due ${dueDate}`);
         return { created: true, title, dueDate };
@@ -60,11 +66,15 @@ export default async function handler(req, res) {
 
     // 🗒️ Build a default summary if none provided
     const logSummary = summary || `Workflow '${name}' executed successfully.`;
-    const logPath = `/api/trigger-workflow/${name}`; // symbolic path for ledger
+    const logPath = `/api/trigger-workflow/${name}`;
 
     // ✅ Call ledger-update to record the workflow trigger
     try {
-      const ledgerResponse = await fetch(`${process.env.VERCEL_URL || ''}/api/ledger-update`, {
+      const ledgerUrl = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}/api/ledger-update`
+        : `${process.env.PUBLIC_BASE_URL || ''}/api/ledger-update`;
+
+      const ledgerResponse = await safeFetch(ledgerUrl, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -103,4 +113,5 @@ export default async function handler(req, res) {
     });
   }
 }
+
 

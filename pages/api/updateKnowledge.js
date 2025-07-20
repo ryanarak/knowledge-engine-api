@@ -1,11 +1,10 @@
 // api/updateKnowledge.js
 import { google } from 'googleapis';
-import fetch from 'node-fetch';
 
-// 📂 Default Knowledge Engine Shared Drive folder ID
-const DEFAULT_FOLDER_ID = '1W25IaUwycLXvldVmXuqsKkR9QFuWyO6_';
+// ✅ New default Shared Drive ID
+const DEFAULT_SHARED_DRIVE_ID = '0ABKmvBuklL0lUk9PVA';
 
-// 🧩 Helper: infer MIME type based on extension
+// 🧹 Helper: infer MIME type based on extension
 function getMimeType(filename) {
   if (filename.endsWith('.json')) return 'application/json';
   if (filename.endsWith('.md')) return 'text/markdown';
@@ -14,13 +13,15 @@ function getMimeType(filename) {
   return 'text/plain';
 }
 
-// 🪵 Helper: update the ledger with a new entry
-async function updateLedger(drive, context, summary, logPath) {
+// 🫕 Helper: update the ledger with a new entry
+async function updateLedger(drive, sharedDriveId, context, summary, logPath) {
   const ledgerFolderId = '1dCwS0nBKQjum7j6aN0ZMEUawI5fH-meS'; // Documentation - Archives
   const ledgerFileName = 'Randall_Memory_Ledger.json';
 
   try {
     const ledgerQuery = await drive.files.list({
+      corpora: 'drive',
+      driveId: sharedDriveId,
       q: `'${ledgerFolderId}' in parents and name='${ledgerFileName}' and trashed=false`,
       fields: 'files(id,name)',
       supportsAllDrives: true,
@@ -33,7 +34,7 @@ async function updateLedger(drive, context, summary, logPath) {
     if (ledgerQuery.data.files.length > 0) {
       ledgerFileId = ledgerQuery.data.files[0].id;
       const contentRes = await drive.files.get(
-        { fileId: ledgerFileId, alt: 'media' },
+        { fileId: ledgerFileId, alt: 'media', supportsAllDrives: true },
         { responseType: 'text' }
       );
       try {
@@ -84,6 +85,7 @@ async function updateLedger(drive, context, summary, logPath) {
 async function triggerWorkflow(name, payload) {
   try {
     if (name === 'send_slack_message' && process.env.SLACK_TOKEN) {
+      const { default: fetch } = await import('node-fetch'); // ✅ dynamic import for ESM
       await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: {
@@ -97,7 +99,6 @@ async function triggerWorkflow(name, payload) {
       });
       console.log('✅ Slack workflow triggered.');
     }
-    // 🛠️ Add more workflow integrations here if needed
   } catch (err) {
     console.error('⚠️ Workflow trigger failed:', err.message);
   }
@@ -108,8 +109,7 @@ export default async function handler(req, res) {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const { filename, content, folderId = DEFAULT_FOLDER_ID, context = 'General', trigger = false } = req.body;
-
+  const { filename, content, folderId, context = 'General', trigger = false } = req.body;
   if (!filename || typeof filename !== 'string') {
     return res.status(400).json({ error: 'Missing or invalid filename' });
   }
@@ -129,13 +129,16 @@ export default async function handler(req, res) {
     });
     const drive = google.drive({ version: 'v3', auth });
 
-    const mimeType = getMimeType(filename);
-    console.log(`📄 Processing file: ${filename} (${mimeType}) in folder: ${folderId}`);
+    const sharedDriveId = process.env.SHARED_DRIVE_ID || DEFAULT_SHARED_DRIVE_ID;
+    const targetFolderId = folderId || sharedDriveId;
 
-    // 🔎 Check if file exists in folder
-    const query = `name='${filename}' and '${folderId}' in parents and trashed=false`;
+    const mimeType = getMimeType(filename);
+    console.log(`📄 Processing file: ${filename} (${mimeType}) in folder: ${targetFolderId}`);
+
     const listRes = await drive.files.list({
-      q: query,
+      corpora: 'drive',
+      driveId: sharedDriveId,
+      q: `name='${filename}' and '${targetFolderId}' in parents and trashed=false`,
       fields: 'files(id,name,webViewLink)',
       supportsAllDrives: true,
       includeItemsFromAllDrives: true
@@ -146,7 +149,6 @@ export default async function handler(req, res) {
     let webViewLink;
 
     if (listRes.data.files.length > 0) {
-      // Update existing file
       fileId = listRes.data.files[0].id;
       await drive.files.update({
         fileId,
@@ -162,11 +164,10 @@ export default async function handler(req, res) {
       webViewLink = fileInfo.data.webViewLink;
       console.log(`✅ Updated file: ${filename}`);
     } else {
-      // Create new file
       const createRes = await drive.files.create({
         requestBody: {
           name: filename,
-          parents: [folderId],
+          parents: [targetFolderId],
           mimeType
         },
         media: { mimeType, body: content },
@@ -179,12 +180,10 @@ export default async function handler(req, res) {
       console.log(`✅ Created file: ${filename}`);
     }
 
-    // 🪵 Log to ledger
     const logPath = `https://drive.google.com/file/d/${fileId}/view`;
     const summary = `${action.toUpperCase()} file: ${filename}`;
-    await updateLedger(drive, context, summary, logPath);
+    await updateLedger(drive, sharedDriveId, context, summary, logPath);
 
-    // 🚀 Trigger optional workflow
     if (trigger) {
       await triggerWorkflow('send_slack_message', { text: `${summary}\n${logPath}` });
     }
