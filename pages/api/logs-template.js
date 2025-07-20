@@ -1,9 +1,12 @@
 // api/logs-template.js
 import { google } from 'googleapis';
+import NodeCache from 'node-cache';
+import rateLimit from 'express-rate-limit';
+import sanitize from 'sanitize-filename';
 
-// ✅ Centralized folder map for direct lookups (updated with new Shared Drive IDs)
+// ✅ Centralized folder map (latest version provided)
 const folderMap = {
-   "Compliance": "1VweenVvzp7019ILgZYVINiUQF-wxLuEQ",
+  "Compliance": "1VweenVvzp7019ILgZYVINiUQF-wxLuEQ",
   "Accounting": "19DJwCmOBInXTHD_p-Yw7v6Ou8_Sk0CVj",
   "Achievements": "1O4FSrhNaqxPC9_EtYbOI3Iw1M8DDfXiR",
   "Ads - Advertisements": "1WRDqHTym-JbQ_YX7ctU4G-kzbBOuilIh",
@@ -79,23 +82,39 @@ const folderMap = {
   "Vision": "1y4Xms3qMOb4K9X2a5MkHiSOmFW7Eb3b1"
 };
 
+// Simple in-memory cache with 10-minute TTL
+const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
+
+// Optional: rate limiter middleware for serverless protection
+export const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: { error: 'Too many requests, please try again later.' }
+});
+
 export default async function handler(req, res) {
-  if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  const { context } = req.query;
-  if (!context) {
-    return res.status(400).json({ error: 'Missing context' });
-  }
-
-  const folderId = folderMap[context];
-  if (!folderId) {
-    return res.status(404).json({ error: `Context folder '${context}' not found in mapping.` });
-  }
-
   try {
-    // 🔑 Authenticate with service account
+    if (req.method !== 'GET') {
+      return res.status(405).json({ error: 'Method not allowed' });
+    }
+
+    const { context } = req.query;
+    if (!context) {
+      return res.status(400).json({ error: 'Missing context parameter.' });
+    }
+
+    const sanitizedContext = sanitize(context);
+    if (!folderMap[sanitizedContext]) {
+      return res.status(404).json({ error: `Context folder '${sanitizedContext}' not found.` });
+    }
+
+    // Check cache first
+    const cached = cache.get(sanitizedContext);
+    if (cached) {
+      return res.status(200).json({ ...cached, cacheHit: true });
+    }
+
+    const folderId = folderMap[sanitizedContext];
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
     const auth = new google.auth.GoogleAuth({
       credentials,
@@ -103,26 +122,47 @@ export default async function handler(req, res) {
     });
     const drive = google.drive({ version: 'v3', auth });
 
-    // 📄 Look for template file
-    const fileName = `${context}_Template.txt`;
+    const fileName = `${sanitizedContext}_Template.txt`;
+    const sharedDriveId = process.env.SHARED_DRIVE_ID;
+
     const fileRes = await drive.files.list({
       q: `'${folderId}' in parents and name='${fileName}' and trashed=false`,
-      fields: 'files(id, name)'
+      fields: 'files(id, name, modifiedTime, owners(displayName))',
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+      ...(sharedDriveId ? { driveId: sharedDriveId, corpora: 'drive' } : {})
     });
 
-    if (fileRes.data.files.length === 0) {
-      return res.status(404).json({ error: `Template file '${fileName}' not found in '${context}'.` });
+    if (!fileRes.data.files || fileRes.data.files.length === 0) {
+      return res.status(404).json({ error: `Template file '${fileName}' not found.` });
     }
 
-    const fileId = fileRes.data.files[0].id;
+    const file = fileRes.data.files[0];
     const contentRes = await drive.files.get(
-      { fileId, alt: 'media' },
+      { fileId: file.id, alt: 'media', supportsAllDrives: true },
       { responseType: 'text' }
     );
 
-    return res.status(200).json({ template: contentRes.data });
+    const responsePayload = {
+      template: contentRes.data,
+      context: sanitizedContext,
+      fileName: file.name,
+      lastModified: file.modifiedTime,
+      owner: file.owners?.[0]?.displayName || 'Unknown',
+      source: 'Google Drive Shared Drive',
+      retrievedAt: new Date().toISOString()
+    };
+
+    // Cache the response
+    cache.set(sanitizedContext, responsePayload);
+
+    return res.status(200).json(responsePayload);
   } catch (err) {
-    console.error('Error fetching template:', err);
-    return res.status(500).json({ error: err.message });
+    console.error('[logs-template] Error:', err);
+    return res.status(500).json({
+      error: 'Internal server error.',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
   }
 }
+
